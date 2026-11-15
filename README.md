@@ -15,7 +15,7 @@ The name is whatever you set with Claude Code's built-in `/rename`. The band upd
 At the prompt of a Claude Code terminal session:
 
 ```
-/plugin install session-label --marketplace srijonDatta/session-label
+/plugin install session-label --marketplace srijonDatta/Name-Your-Agent
 ```
 
 Answer `y` to add the marketplace, then press Enter to install at the user scope. The band appears straight away and in every session you start after that.
@@ -23,10 +23,10 @@ Answer `y` to add the marketplace, then press Enter to install at the user scope
 From a shell:
 
 ```
-claude plugin install session-label --marketplace srijonDatta/session-label
+claude plugin install session-label --marketplace srijonDatta/Name-Your-Agent
 ```
 
-In the desktop app, where `/plugin` does not run: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `srijonDatta/session-label`, then **Add plugin**.
+In the desktop app, where `/plugin` does not run: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `srijonDatta/Name-Your-Agent`, then **Add plugin**.
 
 ## Notes
 

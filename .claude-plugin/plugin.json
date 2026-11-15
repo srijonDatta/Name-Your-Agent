@@ -1,7 +1,8 @@
 {
   "name": "session-label",
   "version": "0.1.0",
-  "description": "Shows the session's /rename name with its full session id, right-aligned above the prompt.",
+  "description": "A Claude Code mod that keeps your session's /rename name and full session ID pinned above the prompt, so you always know which session you're in.",
   "author": { "name": "srijonDatta" },
+  "license": "MIT",
   "types": "./types/index.d.ts"
 }

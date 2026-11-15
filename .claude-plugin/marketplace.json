@@ -1,5 +1,6 @@
 {
   "name": "session-label",
   "owner": { "name": "srijonDatta" },
-  "plugins": [{ "name": "session-label", "source": "./" }]
+  "metadata": { "description": "A Claude Code mod that keeps your session's /rename name and full session ID pinned above the prompt, so you always know which session you're in." },
+  "plugins": [{ "name": "session-label", "source": "./", "description": "A Claude Code mod that keeps your session's /rename name and full session ID pinned above the prompt, so you always know which session you're in." }]
 }

@@ -1,6 +1,19 @@
 {
   "name": "session-label",
   "owner": { "name": "srijonDatta" },
-  "metadata": { "description": "A Claude Code mod that keeps your session's /rename name and full session ID pinned above the prompt, so you always know which session you're in." },
-  "plugins": [{ "name": "session-label", "source": "./", "description": "A Claude Code mod that keeps your session's /rename name and full session ID pinned above the prompt, so you always know which session you're in." }]
+  "metadata": {
+    "description": "Claude Code mods for running several named agents side by side: see each session's name and ID, and link the agents on one repository into a team that can message each other."
+  },
+  "plugins": [
+    {
+      "name": "session-label",
+      "source": "./plugins/session-label",
+      "description": "Keeps your session's /rename name and full session ID pinned above the prompt, so you always know which session you're in."
+    },
+    {
+      "name": "agent-team",
+      "source": "./plugins/agent-team",
+      "description": "Links the named Claude Code sessions working in the same git repository into a team: each agent knows its teammates and can message them."
+    }
+  ]
 }

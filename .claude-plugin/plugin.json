@@ -1,0 +1,7 @@
+{
+  "name": "session-label",
+  "version": "0.1.0",
+  "description": "Shows the session's /rename name with its full session id, right-aligned above the prompt.",
+  "author": { "name": "srijonDatta" },
+  "types": "./types/index.d.ts"
+}

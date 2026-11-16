@@ -9,7 +9,7 @@
 | Mod | What it does |
 | --- | --- |
 | [**session-label**](plugins/session-label) | Pins the session's `/rename` name and full session ID above the prompt, so you always know which session you're in. |
-| [**agent-team**](plugins/agent-team) | Links the named sessions in the same git repository into a team. Agents are introduced to each other, know their teammates, and can message them with `SendMessage`, `/team` and `/tell`. |
+| [**agent-team**](plugins/agent-team) | Links the named sessions in the same git repository into a team. Agents are introduced to each other, know their teammates and what each one is (or was last) working on, and can message them with `SendMessage`, `/team` and `/tell`. |
 
 The two work independently, and best together: name a session, see the name, and have it join its repository's team.
 
@@ -42,10 +42,23 @@ claude plugin install agent-team --marketplace srijonDatta/Name-Your-Agent
 
 1. In two terminals, `cd` into the same repository and run `claude`.
 2. Name them: `/rename Backend Lead` in one and `/rename QA Lead` in the other. Each prompt shows its name, and Backend Lead is told that QA Lead joined.
-3. Type `/team` to see your teammates, and `/tell Backend Lead hi` to message one.
-4. Ask either agent, in plain English, to hand work to the other.
+3. Type `/team` to see your teammates and what each one is working on, or last worked on if it's been idle:
+   ```
+   Teammates:
+     Backend Lead  ·  active 1 min ago  ·  6db75129-258d-4a73-a701-74f7f0cbef10
+         ↳ Preparing the database migration for the release
+           adding the missing index on orders  (2 min ago)
+   ```
+4. Type `/tell Backend Lead hi` to message a teammate, or ask either agent, in plain English, to hand work to the other.
 
 Add more agents the same way at any time. See [agent-team](plugins/agent-team#linking-your-agents-a-walkthrough) for the full walkthrough.
+
+## Privacy and cost
+
+- **Everything stays on your machine.** Session names come from Claude Code's own `/rename`. The team register lives in `~/.claude/agent-team/`, and activity is shown only to teammates on the same repository.
+- **No extra service.** Messages travel over Claude Code's own session messaging, the same path its `SendMessage` tool uses.
+- **Small, bounded model use.** agent-team writes the one- or two-line task summaries with a small model (Haiku): at most once every 3 minutes per session, plus one summary for an idle teammate when `/team` first shows it, cached until that teammate's history changes. session-label makes no model calls.
+- **Peers aren't you.** A teammate's message arrives as a peer request. It can never approve actions or grant permissions on your behalf.
 
 ## Repository layout
 
@@ -63,6 +76,16 @@ cd Name-Your-Agent
 claude plugin validate plugins/session-label && claude plugin test plugins/session-label
 claude plugin validate plugins/agent-team && claude plugin test plugins/agent-team
 ```
+
+## Changelog
+
+**agent-team**
+- **0.3.0:** Idle or restarted teammates show what they last worked on, summarized from their session history, instead of "No activity recorded yet". A session that joins backfills its own last work straight away.
+- **0.2.0:** `/team` and each agent's teammate list show every teammate's current task in one or two lines.
+- **0.1.0:** Per-repository teams, join and rename announcements, a duplicate-name warning, `/team` and `/tell`.
+
+**session-label**
+- **0.1.0:** The session's `/rename` name and full session ID are pinned above the prompt, follow `/rename` live, and come back on resume.
 
 ## License
 

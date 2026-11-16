@@ -73,6 +73,8 @@ Each named session writes only its own file, with its name, session ID, folder a
 
 - **`/tell` or `/team` says "unknown skill".** The mod isn't loaded in that session. Restart the session. If you load mods through `CLAUDE_CODE_PLUGIN_DIRS` rather than `/plugin install`, add the mod's folder to that list.
 - **A teammate doesn't appear in `/team`.** Both sessions need the mod, a name (`/rename`), and the same git repository. A session started in a parent folder outside the repository is on a different team.
+- **`/team` says "This session has no name yet" after a restart.** A brand-new session starts unnamed, even if an earlier one in that terminal had a name. Run `/rename <name>` to join the team. Resuming the earlier session with `claude --resume` keeps its name.
+- **A teammate shows "No recent activity found".** Its session history has no request or reply to summarize yet, or can't be read (history files over 4 MiB are skipped). It fills in after that teammate's next turn.
 - **A dim `agent-team:` line in the transcript** means the session couldn't join. The line says why.
 
 ## Development

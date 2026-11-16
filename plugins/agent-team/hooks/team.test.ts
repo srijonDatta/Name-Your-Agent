@@ -36,10 +36,17 @@ const COMPOSE = {
   sections: [],
 } as const
 
-function world(on: On, opts: { myName?: string | null; files?: Record<string, string> } = {}) {
+function world(on: On, opts: { myName?: string | null; myHistory?: string; files?: Record<string, string> } = {}) {
   const files = new Map<string, string>(Object.entries(opts.files ?? {}))
-  if (opts.myName) files.set(TRANSCRIPT, titled(opts.myName))
+  if (opts.myName) files.set(TRANSCRIPT, titled(opts.myName) + (opts.myHistory ?? ''))
   const sent: { to: string; text: string }[] = []
+  // Modification times; a file not listed was last changed at NOW - 10 min.
+  const mtimes = new Map<string, number>()
+  on('fs.stat', (_, e) => {
+    const p = norm(e.path)
+    if (!files.has(p)) throw new Error('ENOENT ' + p)
+    return { value: { kind: 'file', size: (files.get(p) ?? '').length, mtimeMs: mtimes.get(p) ?? NOW - 600_000, isLink: false } }
+  })
 
   mock.store(on, {})
   mock.env(on, { USERPROFILE: HOME })
@@ -89,7 +96,7 @@ function world(on: On, opts: { myName?: string | null; files?: Record<string, st
   on('turn.complete', () => ({ text: '' }))
   on('ui.log', () => ({}))
   const setMessages = (m: typeof messages) => { messages = m }
-  return { files, sent, clock, summaries, setMessages }
+  return { files, sent, clock, summaries, setMessages, mtimes }
 }
 
 // A live Backend Lead and QA Lead; one ended session; one stale; one in another repo.
@@ -276,5 +283,58 @@ test('a teammate with no recorded activity says so', async ($, on) => {
   const { clock } = world(on, { myName: 'Operation Manager', files: TEAMMATES })
   await boot($, clock)
   const { text } = await $.command.run({ command: 'team', args: '' })
-  expect(text).toContain('No activity recorded yet')
+  expect(text).toContain('No recent activity found')
+})
+
+// Transcript rows as Claude Code writes them.
+const userRow = (text: string) => JSON.stringify({ type: 'user', message: { role: 'user', content: text } }) + '\n'
+const toolResultRow = () =>
+  JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'ok' }] } }) + '\n'
+const assistantRow = (text: string) =>
+  JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: '' }, { type: 'text', text }] } }) + '\n'
+const commandRow = () => userRow('<command-name>/team</command-name><local-command-stdout>Teammates: …</local-command-stdout>')
+const BACKEND_TRANSCRIPT = HOME + '/.claude/projects/c-work-my-app/' + BACKEND + '.jsonl'
+
+test('/team fills an idle teammate in from its transcript, and asks the model only when it moved on', async ($, on) => {
+  const history =
+    userRow('Add the missing index on the orders table') + toolResultRow() +
+    assistantRow('Added the index and a migration; tests pass.') + commandRow()
+  const { clock, summaries, mtimes } = world(on, { myName: 'Operation Manager', files: { ...TEAMMATES, [BACKEND_TRANSCRIPT]: history } })
+  await boot($, clock)
+  const before = summaries.length
+
+  const first = await $.command.run({ command: 'team', args: '' })
+  expect(first.text).toContain('\u21b3 Fixing the payment webhook race') // the (mocked) summary
+  expect(first.text).toContain('(10 min ago)')
+  expect(summaries.length).toBe(before + 1)
+  expect(summaries.at(-1)).toContain('Add the missing index on the orders table') // the real request, not /team
+  expect(summaries.at(-1)).toContain('Added the index and a migration')
+
+  await $.command.run({ command: 'team', args: '' })
+  expect(summaries.length).toBe(before + 1) // cached: the transcript has not changed
+
+  mtimes.set(BACKEND_TRANSCRIPT, NOW - 1_000)
+  await $.command.run({ command: 'team', args: '' })
+  expect(summaries.length).toBe(before + 2) // it moved on: summarized again
+})
+
+test('a session joining with nothing recorded fills in its own last work from its transcript', async ($, on) => {
+  const { files, clock } = world(on, {
+    myName: 'Operation Manager',
+    myHistory: userRow('Review the onboarding guide') + assistantRow('Reviewed it and fixed two links.'),
+    files: TEAMMATES,
+  })
+  await boot($, clock)
+  const entry = mine(files)
+  expect(entry.lastPrompt).toBe('Review the onboarding guide')
+  expect(entry.task).toBe('Fixing the payment webhook race\nadding an idempotency check')
+})
+
+test('building a request never calls the model for teammates', async ($, on) => {
+  const history = userRow('Something') + assistantRow('Done.')
+  const { clock, summaries } = world(on, { myName: 'Operation Manager', files: { ...TEAMMATES, [BACKEND_TRANSCRIPT]: history } })
+  await boot($, clock)
+  const before = summaries.length
+  await $.prompt.compose(COMPOSE)
+  expect(summaries.length).toBe(before)
 })

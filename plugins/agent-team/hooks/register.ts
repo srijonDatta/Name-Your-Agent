@@ -87,14 +87,26 @@ async function projectRoot($: Engine): Promise<string> {
 const teamKey = (root: string) =>
   root.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'root'
 
-// The newest `/rename` name recorded in the session's transcript, or null.
-async function titleFromTranscript($: Engine, config: string, id: string): Promise<string | null> {
+// A session's transcript file (`<config>/projects/<project>/<id>.jsonl`), or null.
+async function findTranscript($: Engine, config: string, id: string): Promise<string | null> {
   try {
     const projects = config + '/projects'
     for (const entry of await $.fs.list(projects)) {
       if (entry.kind !== 'dir') continue
       const file = projects + '/' + entry.name + '/' + id + '.jsonl'
-      if (!(await $.fs.exists(file))) continue
+      if (await $.fs.exists(file)) return file
+    }
+  } catch {
+    // no projects folder
+  }
+  return null
+}
+
+// The newest `/rename` name recorded in the session's transcript, or null.
+async function titleFromTranscript($: Engine, config: string, id: string): Promise<string | null> {
+  try {
+    const file = await findTranscript($, config, id)
+    if (file !== null) {
       const lines = (await $.fs.read(file)).split('\n')
       for (let i = lines.length - 1; i >= 0; i--) {
         const line = lines[i] ?? ''
@@ -215,6 +227,7 @@ async function join($: Engine) {
   if (!self.name) return
   await writeMe($, self)
   await announce($, self)
+  await backfillOwnActivity($, self).catch(() => undefined)
 }
 
 async function beat($: Engine) {
@@ -265,6 +278,72 @@ function twoLines(text: string): string {
 
 let lastSummaryAt = 0
 
+// One or two lines on what an agent is (or was last) working on, from its
+// latest request and reply; null when the model gave nothing usable.
+async function summarize($: Engine, request: string, answer: string): Promise<string | null> {
+  const reply = await $.model.complete({
+    model: SUMMARY_MODEL,
+    maxTokens: 120,
+    timeoutMs: 20_000,
+    system:
+      'You write status lines for a team dashboard. Reply with one or two short plain-text lines ' +
+      '(under 120 characters each) saying what the agent is working on or last worked on. ' +
+      'No preamble, no quotes.',
+    prompt:
+      'The agent’s latest request:\n' + clip(request || '(none)', 1_500) +
+      '\n\nThe agent’s latest reply:\n' + clip(answer || '(none)', 1_500),
+  })
+  if (!reply.isAnswered) return null
+  const task = twoLines(reply.text)
+  return task.length > 0 ? task : null
+}
+
+// The text of a transcript row's message: a string, or its text blocks joined.
+// Rows holding only tool calls, tool results or thinking give ''.
+function rowText(row: any): string {
+  const content = row?.message?.content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((b: any) => b && b.type === 'text' && typeof b.text === 'string')
+    .map((b: any) => b.text)
+    .join('\n')
+}
+
+type LastExchange = { request: string; answer: string; at: number }
+
+// The latest request and reply in a session's transcript file, read from the
+// end. Local command output (/team, /rename) is not a request; a teammate's
+// message is. Null when the file is missing, unreadable or past 4 MiB.
+async function lastExchange($: Engine, file: string): Promise<LastExchange | null> {
+  try {
+    const stat = await $.fs.stat(file)
+    const lines = (await $.fs.read(file)).split('\n')
+    let request = ''
+    let answer = ''
+    for (let i = lines.length - 1; i >= 0 && !(request && answer); i--) {
+      const line = lines[i] ?? ''
+      if (!line.includes('"message"')) continue
+      let row: any
+      try {
+        row = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if (row?.type === 'assistant' && !answer) answer = readable(rowText(row))
+      else if (row?.type === 'user' && !request) {
+        const raw = rowText(row)
+        if (/<local-command-|<command-name>/.test(raw)) continue
+        request = readable(raw)
+      }
+    }
+    if (!request && !answer) return null
+    return { request, answer, at: stat.mtimeMs }
+  } catch {
+    return null
+  }
+}
+
 // After a turn of the main conversation: record the latest request for free,
 // and refresh the model-written summary when the last one is old enough.
 async function recordActivity($: Engine, answer: string) {
@@ -285,24 +364,73 @@ async function recordActivity($: Engine, answer: string) {
 
   if (now - lastSummaryAt < SUMMARY_EVERY_MS) return
   lastSummaryAt = now
-  const reply = await $.model.complete({
-    model: SUMMARY_MODEL,
-    maxTokens: 120,
-    timeoutMs: 20_000,
-    system:
-      'You write status lines for a team dashboard. Reply with one or two short plain-text lines ' +
-      '(under 120 characters each) saying what the agent is working on. No preamble, no quotes.',
-    prompt:
-      'The agent’s latest request:\n' + clip(request || '(none)', 1_500) +
-      '\n\nThe agent’s latest reply:\n' + clip(readable(answer) || '(none)', 1_500),
-  })
-  if (reply.isAnswered) {
-    const task = twoLines(reply.text)
-    if (task.length > 0) {
-      self.task = task
-      await writeMe($, self)
-    }
+  const task = await summarize($, request, readable(answer))
+  if (task !== null) {
+    self.task = task
+    await writeMe($, self)
   }
+}
+
+// On joining with nothing recorded (a restart, a resume, a first install), fill
+// in this session's activity from its own transcript, so teammates see its last
+// work straight away instead of "No activity recorded yet".
+async function backfillOwnActivity($: Engine, self: Me) {
+  if (self.task || self.lastPrompt) return
+  const file = await findTranscript($, self.config, self.id)
+  const last = file === null ? null : await lastExchange($, file)
+  if (last === null) return
+  if (last.request) self.lastPrompt = clip(last.request, 160)
+  self.taskAt = last.at
+  await writeMe($, self)
+  lastSummaryAt = await $.clock.now()
+  const task = await summarize($, last.request, last.answer)
+  if (task !== null) {
+    self.task = task
+    await writeMe($, self)
+  }
+}
+
+// A teammate that has recorded no activity (it runs an older version, or has
+// not finished a turn since joining): what its transcript says it last did.
+// Kept in `$.store` per teammate and transcript modification time, so the
+// model is asked again only when that teammate's transcript has moved on.
+type Seen = { at: number; task?: string; lastPrompt?: string }
+
+async function seenActivity($: Engine, self: Me, m: Member, summarizeIfNew: boolean): Promise<Seen | null> {
+  const key = 'seen:' + m.sessionId
+  const cached = (await $.store.get(key)) as Seen | undefined
+  const file = await findTranscript($, self.config, m.sessionId)
+  if (file === null) return cached ?? null
+  let mtime: number
+  try {
+    mtime = (await $.fs.stat(file)).mtimeMs
+  } catch {
+    return cached ?? null
+  }
+  if (cached && cached.at === mtime) return cached
+  if (!summarizeIfNew) return cached ?? null
+  const last = await lastExchange($, file)
+  if (last === null) return cached ?? null
+  const seen: Seen = { at: last.at }
+  if (last.request) seen.lastPrompt = clip(last.request, 160)
+  const task = await summarize($, last.request, last.answer).catch(() => null)
+  if (task !== null) seen.task = task
+  await $.store.set(key, seen)
+  return seen
+}
+
+// A teammate with its own activity, or with what its transcript says filled in.
+async function withActivity($: Engine, self: Me, team: Member[], summarizeIfNew: boolean): Promise<Member[]> {
+  const out: Member[] = []
+  for (const m of team) {
+    if (m.task || m.lastPrompt) {
+      out.push(m)
+      continue
+    }
+    const seen = await seenActivity($, self, m, summarizeIfNew).catch(() => null)
+    out.push(seen ? { ...m, task: seen.task, lastPrompt: seen.lastPrompt, taskAt: seen.at } : m)
+  }
+  return out
 }
 
 // One line for a teammate's activity, or null when it has recorded none.
@@ -396,12 +524,12 @@ export const register: Register = (on) => {
     const self = await ensureMe($)
     if (!self) return { text: 'agent-team: could not find the Claude config folder.' }
     const now = await $.clock.now()
-    const team = await teammates($, self)
+    const team = await withActivity($, self, await teammates($, self), true)
     const head = self.name
       ? 'You are "' + self.name + '" on the ' + baseName(self.root) + ' team (' + self.root + ').'
       : 'This session has no name yet. Run /rename <name> to join the ' + baseName(self.root) + ' team.'
     const block = (m: Member) => {
-      const what = m.task ?? (m.lastPrompt ? 'Last request: ' + m.lastPrompt : 'No activity recorded yet')
+      const what = m.task ?? (m.lastPrompt ? 'Last request: ' + m.lastPrompt : 'No recent activity found')
       const when = m.taskAt ? '  (' + ago(now, m.taskAt).replace(/^active /, '') + ')' : ''
       const lines = what.split('\n')
       return (
@@ -465,7 +593,9 @@ export const register: Register = (on) => {
     try {
       const self = await ensureMe($)
       if (!self) return result
-      const text = rosterText(self, await teammates($, self), await $.clock.now())
+      // Cached activity only: building a request never waits on the summary model.
+      const team = await withActivity($, self, await teammates($, self), false)
+      const text = rosterText(self, team, await $.clock.now())
       return {
         ...result,
         sections: [...result.sections, { id: 'agent-team:roster', text, scope: 'session' as const }],

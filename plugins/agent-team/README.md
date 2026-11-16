@@ -10,7 +10,7 @@ Run a "Backend Lead", a "QA Lead" and an "Operation Manager" side by side on one
 - **Name to join.** A session joins when it has a name: run `/rename <name>`. Unnamed sessions stay out.
 - **Automatic introductions.** When an agent joins or is renamed, every live teammate gets a short message: *"QA Lead" joined the team…*. Each name is announced once.
 - **Agents know their team.** Each agent's instructions list its live teammates and tell it to coordinate through Claude Code's `SendMessage`. Ask in plain English, e.g. *"Ask Backend Lead whether the webhook changes are done"*, and the agent messages them itself.
-- **See what everyone is working on.** `/team` shows each teammate's current task in one or two lines, and each agent's teammate list includes it too, so agents know who's doing what.
+- **See what everyone is working on, or last worked on.** `/team` shows each teammate's current or most recent task in one or two lines, even for teammates that have been idle a while, and each agent's teammate list includes it too, so agents know who's doing what.
 - **Commands for you:** `/team` lists your teammates, and `/tell <name> <message>` sends one a message directly.
 - **Duplicate-name warning.** Renaming to a name a teammate already uses still works, but shows a warning, since messages to that name could reach the wrong session.
 - **Peers aren't the user.** A teammate's message arrives as a peer request, never as your instruction. A teammate cannot approve actions or grant permissions on your behalf.
@@ -65,7 +65,9 @@ Claude Code lets a mod *message* another session, but not *list* the sessions on
 
 Each named session writes only its own file, with its name, session ID, folder and a last-seen time, and refreshes it every minute. A session that ends marks its file as ended; one not refreshed for 3 minutes is treated as gone. Messages travel over Claude Code's own session messaging, the same path the `SendMessage` tool uses.
 
-**Current task.** After each turn of the main conversation, the agent records its latest request in its file, for free. To write a short summary of the task, it also asks a small, cheap model (Haiku), using the latest request and reply. This happens **at most once every 3 minutes per session**, and the call counts toward that session's usage. Until a summary exists, `/team` shows *Last request: …*. Activity stays on your machine, in the register files, and is shown only to teammates on the same repository.
+**Current task.** After each turn of the main conversation, the agent records its latest request in its file, for free. To write a short summary of the task, it also asks a small, cheap model (Haiku), using the latest request and reply. This happens **at most once every 3 minutes per session**, and the call counts toward that session's usage. Until a summary exists, `/team` shows *Last request: …*.
+
+**Idle or restarted teammates.** A session that joins with nothing recorded, after a restart or resume, fills in its last work from its own transcript right away. For a teammate that still has nothing recorded, for example one running an older version, `/team` reads that teammate's transcript (`~/.claude/projects/…/<session id>.jsonl`) and summarizes its last request and reply, so you see what it last worked on instead of a blank. The summary is cached until that teammate's transcript changes, so repeated `/team` calls don't ask the model again. The agents' own teammate list only ever uses cached summaries. Activity stays on your machine, in the register files, and is shown only to teammates on the same repository.
 
 ## Troubleshooting
 

@@ -79,7 +79,17 @@ function world(on: On, opts: { myName?: string | null; files?: Record<string, st
   })
   on('command.run', { command: 'rename' }, (_, e) => ({ text: 'Session renamed to: ' + e.args }))
   on('prompt.compose', () => ({ sections: [] }))
-  return { files, sent, clock }
+  const summaries: string[] = []
+  let messages: { role: 'user' | 'assistant'; text: string; toolUses: [] }[] = []
+  on('session.messages', () => ({ value: messages }))
+  on('model.complete', (_, e) => {
+    summaries.push(e.prompt)
+    return { value: { isAnswered: true, text: 'Fixing the payment webhook race\nadding an idempotency check', usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }
+  })
+  on('turn.complete', () => ({ text: '' }))
+  on('ui.log', () => ({}))
+  const setMessages = (m: typeof messages) => { messages = m }
+  return { files, sent, clock, summaries, setMessages }
 }
 
 // A live Backend Lead and QA Lead; one ended session; one stale; one in another repo.
@@ -165,12 +175,12 @@ test('/tell routes to the named teammate, longest name first', async ($, on) => 
   await boot($, clock)
   sent.length = 0
 
-  const answer = await $.command.run({ command: 'tell', args: 'QA Lead please re-run the trial tests' })
+  const answer = await $.command.run({ command: 'tell', args: 'QA Lead please re-run the integration tests' })
   expect(answer.text).toContain('Sent to "QA Lead"')
   expect(sent.length).toBe(1)
   expect(sent[0]?.to).toContain(QA)
   expect(sent[0]?.text).toContain('From "Operation Manager"')
-  expect(sent[0]?.text).toContain('please re-run the trial tests')
+  expect(sent[0]?.text).toContain('please re-run the integration tests')
 
   const unknown = await $.command.run({ command: 'tell', args: 'Nobody hello' })
   expect(unknown.text).toContain('Usage: /tell')
@@ -202,4 +212,69 @@ test('a mod loaded mid-session (no session.start) joins on the first prompt', as
   await clock.settle()
   expect(JSON.parse(files.get(TEAM_DIR + '/' + ME + '.json') ?? '{}').name).toBe('Operation Manager')
   expect(sent.length).toBe(2)
+})
+
+const turn = (answer: string) => ({ answer, durationMs: 1, isAborted: false, turnId: 't-' + answer.length, reason: 'answer' as const })
+const user = (text: string) => ({ role: 'user' as const, text, toolUses: [] as [] })
+const mine = (files: Map<string, string>) => JSON.parse(files.get(TEAM_DIR + '/' + ME + '.json') ?? '{}')
+
+test('a finished turn records the latest request and a short summary', async ($, on) => {
+  const { files, clock, summaries, setMessages } = world(on, { myName: 'Operation Manager', files: TEAMMATES })
+  await boot($, clock)
+  setMessages([user('<system-reminder>ignore me</system-reminder>Fix the duplicate payment webhook bug in app.py')])
+  await $.turn.complete(turn('Done: payments are now checked for duplicates first.'))
+  await clock.advance(1)
+  await clock.settle()
+
+  const entry = mine(files)
+  expect(entry.lastPrompt).toBe('Fix the duplicate payment webhook bug in app.py')
+  expect(entry.task).toBe('Fixing the payment webhook race\nadding an idempotency check')
+  expect(summaries.length).toBe(1)
+  expect(summaries[0]).not.toContain('ignore me')
+})
+
+test('the summary model is called at most once every 3 minutes; the request always updates', async ($, on) => {
+  const { files, clock, summaries, setMessages } = world(on, { myName: 'Operation Manager', files: TEAMMATES })
+  await boot($, clock)
+  setMessages([user('first task')])
+  await $.turn.complete(turn('a'))
+  await clock.advance(1)
+  await clock.settle()
+  setMessages([user('second task')])
+  await $.turn.complete(turn('bb'))
+  await clock.advance(1)
+  await clock.settle()
+  expect(summaries.length).toBe(1)
+  expect(mine(files).lastPrompt).toBe('second task')
+
+  await clock.advance(3 * 60_000)
+  await $.turn.complete(turn('ccc'))
+  await clock.advance(1)
+  await clock.settle()
+  expect(summaries.length).toBe(2)
+})
+
+test('/team shows what each teammate is working on, falling back to its last request', async ($, on) => {
+  const files = {
+    ...TEAMMATES,
+    [TEAM_DIR + '/' + BACKEND + '.json']: member(BACKEND, 'Backend Lead', NOW - 30_000, { task: 'Preparing the database migration for the release', taskAt: NOW - 120_000 }),
+    [TEAM_DIR + '/' + QA + '.json']: member(QA, 'QA Lead', NOW - 90_000, { lastPrompt: 'run the integration tests', taskAt: NOW - 60_000 }),
+  }
+  const { clock } = world(on, { myName: 'Operation Manager', files })
+  await boot($, clock)
+  const { text } = await $.command.run({ command: 'team', args: '' })
+  expect(text).toContain('↳ Preparing the database migration for the release  (2 min ago)')
+  expect(text).toContain('↳ Last request: run the integration tests  (1 min ago)')
+
+  const { sections } = await $.prompt.compose(COMPOSE)
+  const roster = sections.find((s) => s.id === 'agent-team:roster')?.text ?? ''
+  expect(roster).toContain('"Backend Lead" (active 1 min ago): working on Preparing the database migration for the release (2 min ago)')
+  expect(roster).toContain('"QA Lead" (active 2 min ago): last request: run the integration tests (1 min ago)')
+})
+
+test('a teammate with no recorded activity says so', async ($, on) => {
+  const { clock } = world(on, { myName: 'Operation Manager', files: TEAMMATES })
+  await boot($, clock)
+  const { text } = await $.command.run({ command: 'team', args: '' })
+  expect(text).toContain('No activity recorded yet')
 })

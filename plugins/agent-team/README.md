@@ -10,6 +10,7 @@ Run a "Backend Lead", a "QA Lead" and an "Operation Manager" side by side on one
 - **Name to join.** A session joins when it has a name: run `/rename <name>`. Unnamed sessions stay out.
 - **Automatic introductions.** When an agent joins or is renamed, every live teammate gets a short message: *"QA Lead" joined the team…*. Each name is announced once.
 - **Agents know their team.** Each agent's instructions list its live teammates and tell it to coordinate through Claude Code's `SendMessage`. Ask in plain English, e.g. *"Ask Backend Lead whether the webhook changes are done"*, and the agent messages them itself.
+- **See what everyone is working on.** `/team` shows each teammate's current task in one or two lines, and each agent's teammate list includes it too, so agents know who's doing what.
 - **Commands for you:** `/team` lists your teammates, and `/tell <name> <message>` sends one a message directly.
 - **Duplicate-name warning.** Renaming to a name a teammate already uses still works, but shows a warning, since messages to that name could reach the wrong session.
 - **Peers aren't the user.** A teammate's message arrives as a peer request, never as your instruction. A teammate cannot approve actions or grant permissions on your behalf.
@@ -34,7 +35,13 @@ It pairs well with [`session-label`](../session-label), which shows each session
    claude
    ```
 2. **Name each agent.** Run `/rename Backend Lead` in the first and `/rename QA Lead` in the second. The first agent receives *"QA Lead" joined the team*.
-3. **Check the team.** Type `/team` in either session. It lists the other session, when it was last active, and its session ID.
+3. **Check the team.** Type `/team` in either session. It lists the other session, when it was last active, its session ID, and what it's working on:
+   ```
+   Teammates:
+     Backend Lead  ·  active 1 min ago  ·  6db75129-258d-4a73-a701-74f7f0cbef10
+         ↳ Preparing the database migration for the release
+           adding the missing index on orders  (2 min ago)
+   ```
 4. **Send a message.** In QA Lead, type `/tell Backend Lead can you re-run the integration tests?`. Names aren't case-sensitive. Backend Lead receives the message and can reply on its own.
 5. **Let them coordinate.** Ask either agent to hand work to the other in plain English. It uses `SendMessage` with the teammate's name.
 
@@ -45,7 +52,7 @@ New agents join the same way at any time: start Claude Code in the repository an
 | Command | What it does |
 | --- | --- |
 | `/rename <name>` | Claude Code's built-in rename. Joins the team, or announces the new name. |
-| `/team` | Lists this repository's live teammates, with last-seen time and session ID. |
+| `/team` | Lists this repository's live teammates, with last-seen time, session ID and current task. |
 | `/tell <name> <message>` | Sends a teammate a message. With teammates "QA" and "QA Lead", `/tell QA Lead …` goes to "QA Lead". |
 
 ## How it works
@@ -57,6 +64,8 @@ Claude Code lets a mod *message* another session, but not *list* the sessions on
 ```
 
 Each named session writes only its own file, with its name, session ID, folder and a last-seen time, and refreshes it every minute. A session that ends marks its file as ended; one not refreshed for 3 minutes is treated as gone. Messages travel over Claude Code's own session messaging, the same path the `SendMessage` tool uses.
+
+**Current task.** After each turn of the main conversation, the agent records its latest request in its file, for free. To write a short summary of the task, it also asks a small, cheap model (Haiku), using the latest request and reply. This happens **at most once every 3 minutes per session**, and the call counts toward that session's usage. Until a summary exists, `/team` shows *Last request: …*. Activity stays on your machine, in the register files, and is shown only to teammates on the same repository.
 
 ## Troubleshooting
 

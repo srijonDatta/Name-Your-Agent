@@ -25,8 +25,20 @@ import type { EngineInterface as Engine, Register } from 'claude-code'
 
 const HEARTBEAT_MS = 60_000
 const STALE_MS = 3 * 60_000
+// A model-written summary of the current task costs one small (Haiku) call, so
+// each session writes one at most this often; the raw latest request is
+// recorded after every turn for free and shown until a summary exists.
+const SUMMARY_EVERY_MS = 3 * 60_000
+const SUMMARY_MODEL = 'haiku'
 
-type Member = {
+// What a session was last doing, kept in its register entry.
+type Activity = {
+  task?: string // one or two lines, written by the summary model
+  lastPrompt?: string // the latest request, trimmed
+  taskAt?: number // when either was last recorded
+}
+
+type Member = Activity & {
   v: 1
   sessionId: string
   name: string
@@ -36,7 +48,7 @@ type Member = {
   ended?: boolean
 }
 
-type Me = { id: string; name: string | null; root: string; dir: string; config: string }
+type Me = Activity & { id: string; name: string | null; root: string; dir: string; config: string }
 
 // Module state starts over on a reload; `ensureMe` rebuilds it from the engine.
 let me: Me | null = null
@@ -113,7 +125,17 @@ async function ensureMe($: Engine): Promise<Me | null> {
   if (config === null) return null
   const root = await projectRoot($)
   const name = await titleFromTranscript($, config, id)
-  me = { id, name, root, config, dir: config + '/agent-team/' + teamKey(root) }
+  const dir = config + '/agent-team/' + teamKey(root)
+  // Carry over what an earlier load of this session recorded (a reload resets
+  // module state; the register file does not).
+  let earlier: Activity = {}
+  try {
+    const old = JSON.parse(await $.fs.read(dir + '/' + id + '.json')) as Member
+    earlier = { task: old.task, lastPrompt: old.lastPrompt, taskAt: old.taskAt }
+  } catch {
+    // first time in this session
+  }
+  me = { id, name, root, config, dir, ...earlier }
   return me
 }
 
@@ -126,6 +148,9 @@ async function writeMe($: Engine, self: Me, ended = false) {
     root: self.root,
     cwd: await $.session.cwd(),
     lastSeen: await $.clock.now(),
+    ...(self.task ? { task: self.task } : {}),
+    ...(self.lastPrompt ? { lastPrompt: self.lastPrompt } : {}),
+    ...(self.taskAt ? { taskAt: self.taskAt } : {}),
     ...(ended ? { ended: true } : {}),
   }
   await $.fs.write(self.dir + '/' + self.id + '.json', JSON.stringify(entry))
@@ -211,6 +236,83 @@ function startTeamWork($: Engine, delayMs: number) {
   $.clock.every(HEARTBEAT_MS, () => void beat($).catch(() => undefined))
 }
 
+// ---------------------------------------------------------------------------
+// Activity: what each agent is (or was last) working on.
+// ---------------------------------------------------------------------------
+
+const clip = (s: string, n: number) => (s.length <= n ? s : s.slice(0, n - 1).trimEnd() + '…')
+
+// A message's text as a person would read it: system reminders dropped, the
+// tags of slash commands and peer envelopes removed, whitespace collapsed.
+function readable(text: string): string {
+  return text
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// At most two lines of at most 120 characters each.
+function twoLines(text: string): string {
+  return text
+    .split('\n')
+    .map((l) => l.replace(/^[-*•\s]+/, '').trim())
+    .filter((l) => l.length > 0)
+    .slice(0, 2)
+    .map((l) => clip(l, 120))
+    .join('\n')
+}
+
+let lastSummaryAt = 0
+
+// After a turn of the main conversation: record the latest request for free,
+// and refresh the model-written summary when the last one is old enough.
+async function recordActivity($: Engine, answer: string) {
+  const self = await ensureMe($)
+  if (!self?.name) return
+  const messages = await $.session.messages()
+  let request = ''
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m?.role !== 'user') continue
+    request = readable(m.text)
+    if (request.length > 0) break
+  }
+  const now = await $.clock.now()
+  if (request.length > 0) self.lastPrompt = clip(request, 160)
+  self.taskAt = now
+  await writeMe($, self)
+
+  if (now - lastSummaryAt < SUMMARY_EVERY_MS) return
+  lastSummaryAt = now
+  const reply = await $.model.complete({
+    model: SUMMARY_MODEL,
+    maxTokens: 120,
+    timeoutMs: 20_000,
+    system:
+      'You write status lines for a team dashboard. Reply with one or two short plain-text lines ' +
+      '(under 120 characters each) saying what the agent is working on. No preamble, no quotes.',
+    prompt:
+      'The agent’s latest request:\n' + clip(request || '(none)', 1_500) +
+      '\n\nThe agent’s latest reply:\n' + clip(readable(answer) || '(none)', 1_500),
+  })
+  if (reply.isAnswered) {
+    const task = twoLines(reply.text)
+    if (task.length > 0) {
+      self.task = task
+      await writeMe($, self)
+    }
+  }
+}
+
+// One line for a teammate's activity, or null when it has recorded none.
+function activityLine(m: Member, now: number): string | null {
+  const what = m.task ? 'working on ' + m.task : m.lastPrompt ? 'last request: ' + m.lastPrompt : null
+  if (!what) return null
+  const when = m.taskAt ? ' (' + ago(now, m.taskAt).replace(/^active /, '') + ')' : ''
+  return what.replace(/\n/g, ' / ') + when
+}
+
 function rosterText(self: Me, team: Member[], now: number): string {
   const repo = baseName(self.root)
   if (!self.name) {
@@ -220,7 +322,10 @@ function rosterText(self: Me, team: Member[], now: number): string {
       ' repository cannot find it. The user adds it to the team with /rename <name>.'
     )
   }
-  const lines = team.map((m) => '- "' + m.name + '" (' + ago(now, m.lastSeen) + ')')
+  const lines = team.map((m) => {
+    const doing = activityLine(m, now)
+    return '- "' + m.name + '" (' + ago(now, m.lastSeen) + ')' + (doing ? ': ' + doing : '')
+  })
   return (
     '# Project team (agent-team)\n' +
     'You are "' + self.name + '", one of the Claude Code sessions working in the git repository ' +
@@ -295,11 +400,36 @@ export const register: Register = (on) => {
     const head = self.name
       ? 'You are "' + self.name + '" on the ' + baseName(self.root) + ' team (' + self.root + ').'
       : 'This session has no name yet. Run /rename <name> to join the ' + baseName(self.root) + ' team.'
+    const block = (m: Member) => {
+      const what = m.task ?? (m.lastPrompt ? 'Last request: ' + m.lastPrompt : 'No activity recorded yet')
+      const when = m.taskAt ? '  (' + ago(now, m.taskAt).replace(/^active /, '') + ')' : ''
+      const lines = what.split('\n')
+      return (
+        '  ' + m.name + '  ·  ' + ago(now, m.lastSeen) + '  ·  ' + m.sessionId + '\n' +
+        lines.map((l, i) => '      ' + (i === 0 ? '↳ ' : '  ') + l + (i === lines.length - 1 ? when : '')).join('\n')
+      )
+    }
     const body =
       team.length > 0
-        ? team.map((m) => '  ' + m.name + '  ·  ' + ago(now, m.lastSeen) + '  ·  ' + m.sessionId).join('\n')
+        ? team.map(block).join('\n\n')
         : '  No teammates are active on this repository right now.'
     return { text: head + '\n\nTeammates:\n' + body }
+  })
+
+  // After each turn of the main conversation, record what this agent is doing.
+  // Scheduled on a timer so the turn's completion never waits on the disk or
+  // the summary model; subagent turns are skipped.
+  on('turn.complete', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined && !e.isAborted) {
+      const answer = e.answer
+      $.clock.after(0, () =>
+        void recordActivity($, answer).catch((err) =>
+          $.ui.log('agent-team: could not record activity: ' + String(err), { to: 'debug' }),
+        ),
+      )
+    }
+    return result
   })
 
   on('command.run', { command: 'tell' }, async ($, e) => {

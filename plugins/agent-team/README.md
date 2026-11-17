@@ -1,6 +1,6 @@
 # agent-team
 
-> Links the named Claude Code sessions working in the same git repository into a team: each agent knows its teammates and can message them.
+> Links the named Claude Code sessions working in the same git repository into a team: a newcomer is welcomed by each teammate with a brief of what it's working on, every agent knows its teammates, and they can message each other.
 
 Run a "Backend Lead", a "QA Lead" and an "Operation Manager" side by side on one repository, and they can hand work to each other, ask for reviews and report results, without you copying messages between terminals.
 
@@ -9,6 +9,7 @@ Run a "Backend Lead", a "QA Lead" and an "Operation Manager" side by side on one
 - **Teams per repository.** A session's team is set by the folder it **starts** in: the git repository that folder belongs to, or, outside a git repository, the folder itself. Sessions started anywhere in the same repository are one team. Changing directory after starting doesn't move a session to another team; restarting it in another folder does.
 - **Name to join.** A session joins when it has a name: run `/rename <name>`. Unnamed sessions stay out.
 - **Automatic introductions.** When an agent joins or is renamed, every live teammate gets a short message: *"QA Lead" joined the team…*. Each name is announced once.
+- **Welcome from the team.** In return, each live teammate says hi to the newcomer within a minute, with a brief of what it's working on: *Hi "QA Lead", I'm "Backend Lead" — welcome to the my-app team. What I'm working on: …*. The newcomer starts linked to its colleagues and knows who's doing what before it asks. Each teammate greets a newcomer once: a restart or a rename doesn't trigger another round.
 - **Agents know their team.** Each agent's instructions list its live teammates and tell it to coordinate through Claude Code's `SendMessage`. Ask in plain English, e.g. *"Ask Backend Lead whether the webhook changes are done"*, and the agent messages them itself.
 - **See what everyone is working on, or last worked on.** `/team` shows each teammate's current or most recent task in one or two lines, even for teammates that have been idle a while, and each agent's teammate list includes it too, so agents know who's doing what. The most recently active teammate is listed first.
 - **Works with long sessions.** Session history files are read from the end in small pieces, so a session that has been running for days, with a history of any size, stays on the team.
@@ -35,7 +36,13 @@ It pairs well with [`session-label`](../session-label), which shows each session
    cd path/to/your-repo
    claude
    ```
-2. **Name each agent.** Run `/rename Backend Lead` in the first and `/rename QA Lead` in the second. The first agent receives *"QA Lead" joined the team*.
+2. **Name each agent.** Run `/rename Backend Lead` in the first and `/rename QA Lead` in the second. Backend Lead receives *"QA Lead" joined the team*, and within a minute QA Lead receives a hi from Backend Lead with a brief of its work:
+   ```
+   [agent-team] Hi "QA Lead", I'm "Backend Lead" — welcome to the my-app team. What I'm working on:
+   Preparing the database migration for the release / adding the missing index on orders.
+   Message me by name with SendMessage.
+   ```
+   With more agents on the team, the newcomer gets one hi from each of them.
 3. **Check the team.** Type `/team` in either session. It lists every other session on the team, most recently active first, with when it was last active, its session ID, and what it's working on. On a team of three, "Backend Developer" sees:
    ```
    /team
@@ -75,6 +82,8 @@ Each named session writes only its own file, with its name, session ID, folder a
 
 **Finding a session's name.** The name is the latest `/rename` recorded in the session's history file (`~/.claude/projects/…/<session id>.jsonl`), or, if there is none, the `custom-title.json` Claude Code keeps beside it. History files grow by megabytes a day, and a mod may read at most 4 MiB at a time, so they are read from the end, 1 MiB at a time, as raw bytes, and only whole lines are decoded. Messages travel over Claude Code's own session messaging, the same path the `SendMessage` tool uses.
 
+**Welcomes.** Each session keeps a list of the teammates it already knows. When it joins (or restarts), it adds everyone already on the team without greeting them, since they get its *joined* message instead. On every heartbeat it compares the team with that list and sends a hi, once, to each session it hasn't seen before, using the brief it has already recorded for itself. A welcome costs no model call. A rename keeps the session ID, so it isn't greeted again.
+
 **Current task.** After each turn of the main conversation, the agent records its latest request in its file, for free. To write a short summary of the task, it also asks a small, cheap model (Haiku), using the latest request and reply. This happens **at most once every 3 minutes per session**, and the call counts toward that session's usage. Until a summary exists, `/team` shows *Last request: …*.
 
 **Idle or restarted teammates.** A session that joins with nothing recorded, after a restart or resume, fills in its last work from its own transcript right away. For a teammate that still has nothing recorded, for example one running an older version, `/team` reads that teammate's transcript (`~/.claude/projects/…/<session id>.jsonl`) and summarizes its last request and reply, so you see what it last worked on instead of a blank. The summary is cached until that teammate's transcript changes, so repeated `/team` calls don't ask the model again. The agents' own teammate list only ever uses cached summaries. Activity stays on your machine, in the register files, and is shown only to teammates on the same repository.
@@ -91,6 +100,7 @@ Each named session writes only its own file, with its name, session ID, folder a
 - **A teammate sees you, but you don't see it** (versions before 0.3.1). Its history file grew past 4 MiB, so it lost its name and stopped refreshing its entry; its own `/team` says "This session has no name yet". Update the mod and restart that session.
 - **`/team` says "This session has no name yet" after a restart.** A brand-new session starts unnamed, even if an earlier one in that terminal had a name. Run `/rename <name>` to join the team. Resuming the earlier session with `claude --resume` keeps its name.
 - **A teammate shows "No recent activity found".** Its session history has no request or reply to summarize yet, or can't be read. It fills in after that teammate's next turn.
+- **A newcomer got no hi from a teammate.** That teammate runs a version before 0.4.0, was closed or asleep when the newcomer joined, or restarted after it joined (a restart greets nobody already on the team). `/team` still shows what it's working on.
 - **A dim `agent-team:` line in the transcript** means the session couldn't join. The line says why.
 
 ## Development

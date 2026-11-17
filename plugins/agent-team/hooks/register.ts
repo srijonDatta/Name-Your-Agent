@@ -19,6 +19,8 @@ import type { EngineInterface as Engine, Register } from 'claude-code'
 //   - A system-prompt section listing the live teammates and how to message
 //     them, rebuilt as the team changes.
 //   - On joining or renaming, every live teammate is sent a short message.
+//   - A newcomer is sent a hi by each live teammate, with that teammate's
+//     brief of what it is working on.
 //
 // TRUST. A teammate's message reaches the receiver as a PEER message, never as
 // the user's. The prompt section says so: a teammate cannot approve actions.
@@ -270,6 +272,54 @@ async function announce($: Engine, self: Me) {
   await $.store.set(key, self.name)
 }
 
+// WELCOMES. When a teammate joins, every live teammate's own mod says hi to it
+// once, with a brief of what that teammate is working on, so the newcomer
+// learns who is doing what without asking. Each session keeps the session IDs
+// it already knows in `$.store`. Joining (a start, reload or restart) adds the
+// teammates already there without greeting them; the heartbeat greets anyone
+// new. A rename keeps the session ID, so it is not a new join.
+const knownKey = (self: Me) => 'known:' + self.id
+
+async function knowCurrentTeam($: Engine, self: Me) {
+  const known = (await $.store.get(knownKey(self))) as string[] | undefined
+  const ids = new Set(Array.isArray(known) ? known : [])
+  for (const m of await teammates($, self)) ids.add(m.sessionId)
+  await $.store.set(knownKey(self), [...ids])
+}
+
+// This session's own brief: its task summary, else its latest request.
+function brief(a: Activity): string | null {
+  if (a.task) return a.task.split('\n').join(' / ')
+  if (a.lastPrompt) return 'Last request: ' + a.lastPrompt
+  return null
+}
+
+function welcomeText(self: Me, newcomer: Member): string {
+  const doing = brief(self)
+  return (
+    '[agent-team] Hi "' + newcomer.name + '", I\'m "' + self.name + '" — welcome to the ' +
+    baseName(self.root) + ' team. ' +
+    (doing ? "What I'm working on: " + doing.replace(/[.\s]+$/, '') + '. ' : '') +
+    'Message me by name with SendMessage.'
+  )
+}
+
+async function welcomeNewcomers($: Engine, self: Me) {
+  if (!self.name) return
+  const known = (await $.store.get(knownKey(self))) as string[] | undefined
+  if (!Array.isArray(known)) {
+    await knowCurrentTeam($, self) // named after joining: whoever is here was here first
+    return
+  }
+  const fresh = (await teammates($, self)).filter((m) => !known.includes(m.sessionId))
+  if (fresh.length === 0) return
+  // Recorded before sending, so a failed or slow send never greets twice.
+  await $.store.set(knownKey(self), [...known, ...fresh.map((m) => m.sessionId)])
+  for (const m of fresh) {
+    await $.session.send({ to: { sessionId: m.sessionId }, text: welcomeText(self, m) }).catch(() => undefined)
+  }
+}
+
 async function join($: Engine) {
   const self = await ensureMe($)
   if (!self) {
@@ -278,13 +328,16 @@ async function join($: Engine) {
   }
   if (!self.name) return
   await writeMe($, self)
+  await knowCurrentTeam($, self)
   await announce($, self)
   await backfillOwnActivity($, self).catch(() => undefined)
 }
 
 async function beat($: Engine) {
   const self = await ensureMe($)
-  if (self) await writeMe($, self)
+  if (!self) return
+  await writeMe($, self)
+  await welcomeNewcomers($, self)
 }
 
 // Joining and the heartbeat start from `session.start`, and again from the first
@@ -560,6 +613,7 @@ export const register: Register = (on) => {
       self.name = name
       const clash = (await teammates($, self)).find((m) => sameName(m.name, name))
       await writeMe($, self)
+      await welcomeNewcomers($, self) // a first name: notes who is already here
       await announce($, self)
       if (clash) {
         return {

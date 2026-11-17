@@ -1,7 +1,7 @@
 {
   "name": "agent-team",
-  "version": "0.3.1",
-  "description": "Connects the named Claude Code sessions working in the same git repository into a team: each agent knows its teammates and can message them.",
+  "version": "0.4.0",
+  "description": "Connects the named Claude Code sessions working in the same git repository into a team: each teammate welcomes a newcomer with a brief of its work, /team shows who's doing what, and /tell messages a teammate.",
   "author": { "name": "srijonDatta" },
   "license": "MIT"
 }

@@ -36,7 +36,7 @@ const COMPOSE = {
   sections: [],
 } as const
 
-function world(on: On, opts: { myName?: string | null; myHistory?: string; files?: Record<string, string> } = {}) {
+function world(on: On, opts: { myName?: string | null; myHistory?: string; files?: Record<string, string>; store?: Record<string, unknown> } = {}) {
   const files = new Map<string, string>(Object.entries(opts.files ?? {}))
   if (opts.myName) files.set(TRANSCRIPT, titled(opts.myName) + (opts.myHistory ?? ''))
   const sent: { to: string; text: string }[] = []
@@ -48,7 +48,7 @@ function world(on: On, opts: { myName?: string | null; myHistory?: string; files
     return { value: { kind: 'file', size: new TextEncoder().encode(files.get(p) ?? '').length, mtimeMs: mtimes.get(p) ?? NOW - 600_000, isLink: false } }
   })
 
-  mock.store(on, {})
+  mock.store(on, opts.store ?? {})
   mock.env(on, { USERPROFILE: HOME })
   const clock = mock.clock(on, { now: NOW })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -401,4 +401,81 @@ test('/team and the roster list the most recently active teammate first', async 
   const roster = sections.find((s) => s.id === 'agent-team:roster')?.text ?? ''
   expect(roster.indexOf('"QA Lead"')).toBeGreaterThan(-1)
   expect(roster.indexOf('"QA Lead"')).toBeLessThan(roster.indexOf('"Backend Lead"'))
+})
+
+// Welcomes: each live teammate says hi to a newcomer, once, with its brief.
+const NEWBIE = '66666666-ffff-4fff-8fff-666666666666'
+const toNewbie = (sent: { to: string; text: string }[]) => sent.filter((s) => s.to.includes(NEWBIE))
+const arrive = (files: Map<string, string>, name: string, at: number) =>
+  files.set(TEAM_DIR + '/' + NEWBIE + '.json', member(NEWBIE, name, at))
+
+test('a newcomer gets one hi from this session, with what it is working on', async ($, on) => {
+  const { files, sent, clock } = world(on, {
+    myName: 'Operation Manager',
+    myHistory: userRow('Plan the release') + assistantRow('Drafted the plan.'),
+    files: TEAMMATES,
+  })
+  await boot($, clock)
+  const announced = sent.length
+  arrive(files, 'QA Engineer', NOW + 30_000)
+  await clock.advance(60_000)
+  await clock.settle()
+
+  const hi = toNewbie(sent)
+  expect(hi.length).toBe(1)
+  expect(hi[0]?.text).toContain('Hi "QA Engineer", I\'m "Operation Manager"')
+  expect(hi[0]?.text).toContain('welcome to the my-app team')
+  expect(hi[0]?.text).toContain("What I'm working on: Fixing the payment webhook race / adding an idempotency check.")
+  expect(sent.length).toBe(announced + 1) // nobody else is greeted
+
+  await clock.advance(60_000)
+  await clock.settle()
+  expect(toNewbie(sent).length).toBe(1) // once only
+})
+
+test('teammates already there when this session joins get no hi', async ($, on) => {
+  const { sent, clock } = world(on, { myName: 'Operation Manager', files: TEAMMATES })
+  await boot($, clock)
+  const announced = sent.length
+  await clock.advance(120_000)
+  await clock.settle()
+  expect(sent.length).toBe(announced)
+})
+
+test('after a restart, teammates that joined meanwhile get no hi', async ($, on) => {
+  // The store remembers only Backend Lead from before; QA Lead joined while this session was down.
+  const { sent, clock } = world(on, { myName: 'Operation Manager', files: TEAMMATES, store: { ['known:' + ME]: [BACKEND] } })
+  await boot($, clock)
+  const announced = sent.length
+  await clock.advance(60_000)
+  await clock.settle()
+  expect(sent.length).toBe(announced)
+})
+
+test('a teammate renaming itself is not greeted again', async ($, on) => {
+  const { files, sent, clock } = world(on, { myName: 'Operation Manager', files: TEAMMATES })
+  await boot($, clock)
+  const announced = sent.length
+  files.set(TEAM_DIR + '/' + BACKEND + '.json', member(BACKEND, 'Platform Lead', NOW + 30_000))
+  await clock.advance(60_000)
+  await clock.settle()
+  expect(sent.length).toBe(announced)
+})
+
+test('an unnamed session greets nobody, and once named greets only later arrivals', async ($, on) => {
+  const { files, sent, clock } = world(on, { myName: null, files: TEAMMATES })
+  await boot($, clock)
+  await $.command.run({ command: 'rename', args: 'Frontend Dev' })
+  const afterRename = sent.length
+  await clock.advance(60_000)
+  await clock.settle()
+  expect(sent.length).toBe(afterRename) // Backend Lead and QA Lead were already here
+
+  arrive(files, 'Designer', NOW + 90_000)
+  await clock.advance(60_000)
+  await clock.settle()
+  const hi = toNewbie(sent)
+  expect(hi.length).toBe(1)
+  expect(hi[0]?.text).toContain('Hi "Designer", I\'m "Frontend Dev"')
+  expect(hi[0]?.text).not.toContain('working on') // nothing recorded yet: no brief
 })

@@ -13,7 +13,7 @@
     {
       "name": "agent-team",
       "source": "./plugins/agent-team",
-      "description": "Links the named Claude Code sessions working in the same git repository into a team: each agent knows its teammates and can message them."
+      "description": "Links the named Claude Code sessions working in the same git repository into a team: each teammate welcomes a newcomer with a brief of its work, /team shows who's doing what, and /tell messages a teammate."
     }
   ]
 }

@@ -40,9 +40,9 @@ claude plugin install agent-team --marketplace srijonDatta/Name-Your-Agent
 
 ## Quick start: a team of two agents
 
-1. In two terminals, `cd` into the same repository and run `claude`.
+1. In two terminals, `cd` into the same repository and run `claude`. The folder a session starts in decides its team, so start every agent from inside the repository.
 2. Name them: `/rename Backend Lead` in one and `/rename QA Lead` in the other. Each prompt shows its name, and Backend Lead is told that QA Lead joined.
-3. Type `/team` to see your teammates and what each one is working on, or last worked on if it's been idle:
+3. Type `/team` to see your teammates, most recently active first, and what each one is working on, or last worked on if it's been idle:
    ```
    Teammates:
      Backend Lead  ·  active 1 min ago  ·  6db75129-258d-4a73-a701-74f7f0cbef10

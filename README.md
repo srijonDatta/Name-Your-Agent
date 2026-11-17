@@ -80,6 +80,7 @@ claude plugin validate plugins/agent-team && claude plugin test plugins/agent-te
 ## Changelog
 
 **agent-team**
+- **0.3.1:** Fix: a session whose history file grew past 4 MiB (about a day of work) lost its name, stopped refreshing its entry and vanished from its teammates' `/team`, while still seeing them itself. History files are now read from the end in 1 MiB pieces. `/team` and the teammate list show the most recently active teammate first.
 - **0.3.0:** Idle or restarted teammates show what they last worked on, summarized from their session history, instead of "No activity recorded yet". A session that joins backfills its own last work straight away.
 - **0.2.0:** `/team` and each agent's teammate list show every teammate's current task in one or two lines.
 - **0.1.0:** Per-repository teams, join and rename announcements, a duplicate-name warning, `/team` and `/tell`.

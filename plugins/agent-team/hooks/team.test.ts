@@ -45,7 +45,7 @@ function world(on: On, opts: { myName?: string | null; myHistory?: string; files
   on('fs.stat', (_, e) => {
     const p = norm(e.path)
     if (!files.has(p)) throw new Error('ENOENT ' + p)
-    return { value: { kind: 'file', size: (files.get(p) ?? '').length, mtimeMs: mtimes.get(p) ?? NOW - 600_000, isLink: false } }
+    return { value: { kind: 'file', size: new TextEncoder().encode(files.get(p) ?? '').length, mtimeMs: mtimes.get(p) ?? NOW - 600_000, isLink: false } }
   })
 
   mock.store(on, {})
@@ -63,10 +63,17 @@ function world(on: On, opts: { myName?: string | null; myHistory?: string; files
     return { isDelivered: true }
   })
   on('fs.exists', (_, e) => ({ value: files.has(norm(e.path)) }))
+  // Like the host: byte ranges, `{ base64 }` for bytes, and an answer over
+  // 4 MiB refused, so a whole-file read of a big transcript fails here too.
   on('fs.read', (_, e) => {
     const text = files.get(norm(e.path))
     if (text === undefined) throw new Error('ENOENT ' + e.path)
-    return { value: text }
+    const all = new TextEncoder().encode(text)
+    const start = e.offset ?? 0
+    const bytes = all.subarray(start, e.length === undefined ? all.length : start + e.length)
+    if (bytes.length > 4 * 1024 * 1024) throw new Error('answer over 4 MiB: ' + e.path)
+    if (e.as === 'bytes') return { value: { base64: (bytes as any).toBase64() as string } }
+    return { value: new TextDecoder().decode(bytes) }
   })
   on('fs.write', (_, e) => {
     files.set(norm(e.path), e.text)
@@ -337,4 +344,61 @@ test('building a request never calls the model for teammates', async ($, on) => 
   const before = summaries.length
   await $.prompt.compose(COMPOSE)
   expect(summaries.length).toBe(before)
+})
+
+// Transcripts pass the 4 MiB a single read may return within a day of work.
+// Multi-byte characters make every 1 MiB read boundary likely to cut one.
+const bigFiller = (bytes: number) => {
+  const row = JSON.stringify({ type: 'progress', data: 'déjà vu, naïve café '.repeat(40) }) + '\n'
+  return row.repeat(Math.ceil(bytes / new TextEncoder().encode(row).length))
+}
+
+test('a session whose transcript is past 4 MiB still finds its name and joins', async ($, on) => {
+  const { files, sent, clock } = world(on, { myName: 'Opérations Lead', myHistory: bigFiller(6 * 1024 * 1024), files: TEAMMATES })
+  await boot($, clock)
+  expect(mine(files).name).toBe('Opérations Lead')
+  expect(sent.length).toBe(2)
+  await clock.advance(60_000)
+  await clock.settle()
+  expect(mine(files).lastSeen).toBeGreaterThan(NOW + 1_500) // and keeps beating after joining
+})
+
+test('the name falls back to the custom-title file beside the transcript', async ($, on) => {
+  const files = {
+    ...TEAMMATES,
+    [TRANSCRIPT]: '{"type":"user"}\n',
+    [TRANSCRIPT.replace(/\.jsonl$/, '') + '/custom-title.json']: JSON.stringify({ customTitle: 'Operation Manager' }),
+  }
+  const { files: fs, clock } = world(on, { myName: null, files })
+  await boot($, clock)
+  expect(mine(fs).name).toBe('Operation Manager')
+})
+
+test('an idle teammate with a transcript past 4 MiB is still summarized', async ($, on) => {
+  const history =
+    bigFiller(5 * 1024 * 1024) +
+    userRow('Rotate the staging secrets') + assistantRow('Rotated them and redeployed.') +
+    toolResultRow().repeat(20_000) // over 1 MiB of rows after the exchange
+  const { clock, summaries } = world(on, { myName: 'Operation Manager', files: { ...TEAMMATES, [BACKEND_TRANSCRIPT]: history } })
+  await boot($, clock)
+  await $.command.run({ command: 'team', args: '' })
+  expect(summaries.at(-1)).toContain('Rotate the staging secrets')
+  expect(summaries.at(-1)).toContain('Rotated them and redeployed.')
+})
+
+test('/team and the roster list the most recently active teammate first', async ($, on) => {
+  const files = {
+    ...TEAMMATES,
+    [TEAM_DIR + '/' + BACKEND + '.json']: member(BACKEND, 'Backend Lead', NOW - 30_000, { lastPrompt: 'older work', taskAt: NOW - 20 * 60_000 }),
+    [TEAM_DIR + '/' + QA + '.json']: member(QA, 'QA Lead', NOW - 90_000, { lastPrompt: 'newer work', taskAt: NOW - 60_000 }),
+  }
+  const { clock } = world(on, { myName: 'Operation Manager', files })
+  await boot($, clock)
+  const text = (await $.command.run({ command: 'team', args: '' })).text ?? ''
+  expect(text.indexOf('QA Lead')).toBeGreaterThan(-1)
+  expect(text.indexOf('QA Lead')).toBeLessThan(text.indexOf('Backend Lead'))
+  const { sections } = await $.prompt.compose(COMPOSE)
+  const roster = sections.find((s) => s.id === 'agent-team:roster')?.text ?? ''
+  expect(roster.indexOf('"QA Lead"')).toBeGreaterThan(-1)
+  expect(roster.indexOf('"QA Lead"')).toBeLessThan(roster.indexOf('"Backend Lead"'))
 })

@@ -102,28 +102,80 @@ async function findTranscript($: Engine, config: string, id: string): Promise<st
   return null
 }
 
-// The newest `/rename` name recorded in the session's transcript, or null.
-async function titleFromTranscript($: Engine, config: string, id: string): Promise<string | null> {
-  try {
-    const file = await findTranscript($, config, id)
-    if (file !== null) {
-      const lines = (await $.fs.read(file)).split('\n')
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i] ?? ''
-        if (!line.includes('"custom-title"')) continue
-        try {
-          const row = JSON.parse(line)
-          if (row?.type === 'custom-title' && typeof row.customTitle === 'string') {
-            return row.customTitle.trim() || null
-          }
-        } catch {
-          // torn line: keep looking
-        }
-      }
-      return null
+// Transcripts outgrow one `$.fs.read` (4 MiB a call) within a day of work, so
+// they are read from the end in byte ranges. Bytes, not text: a text range can
+// cut a multi-byte character in two, and lines are only decoded once whole.
+const READ_CHUNK = 1024 * 1024
+const SCAN_LIMIT = 256 * 1024 * 1024 // give up past this much of one file
+const LONGEST_LINE = 16 * 1024 * 1024 // a longer line is skipped, not kept whole
+
+function fromBase64(base64: string): Uint8Array {
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
+
+function joinBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  if (b.length === 0) return a
+  const out = new Uint8Array(a.length + b.length)
+  out.set(a)
+  out.set(b, a.length)
+  return out
+}
+
+// Calls `visit` with each line of the file, last line first, until it returns
+// true or the start of the file. Empty lines are skipped.
+async function scanFromEnd($: Engine, file: string, visit: (line: string) => boolean): Promise<void> {
+  const { size } = await $.fs.stat(file)
+  const decoder = new TextDecoder()
+  let end = size
+  let carry: Uint8Array = new Uint8Array(0) // the start of a line whose beginning is not read yet
+  while (end > 0 && size - end < SCAN_LIMIT) {
+    const start = Math.max(0, end - READ_CHUNK)
+    const read = await $.fs.read(file, { as: 'bytes', offset: start, length: end - start })
+    const chunk = joinBytes(fromBase64(read.base64), carry)
+    let lineEnd = chunk.length
+    for (let i = chunk.length - 1; i >= 0; i--) {
+      if (chunk[i] !== 10) continue // '\n'
+      if (lineEnd > i + 1 && visit(decoder.decode(chunk.subarray(i + 1, lineEnd)))) return
+      lineEnd = i
     }
+    carry = lineEnd > LONGEST_LINE ? new Uint8Array(0) : chunk.slice(0, lineEnd)
+    end = start
+  }
+  if (end === 0 && carry.length > 0) visit(decoder.decode(carry))
+}
+
+// The newest `/rename` name recorded in the session's transcript; else the
+// name Claude Code keeps beside it (`<id>/custom-title.json`); else null.
+async function titleFromTranscript($: Engine, config: string, id: string): Promise<string | null> {
+  const file = await findTranscript($, config, id)
+  if (file === null) return null
+  let title: string | null = null
+  try {
+    await scanFromEnd($, file, (line) => {
+      if (!line.includes('"custom-title"')) return false
+      try {
+        const row = JSON.parse(line)
+        if (row?.type === 'custom-title' && typeof row.customTitle === 'string') {
+          title = row.customTitle.trim() || null
+          return true
+        }
+      } catch {
+        // torn line: keep looking
+      }
+      return false
+    })
   } catch {
-    // unreadable: unnamed until the next /rename
+    // unreadable: try the side file
+  }
+  if (title !== null) return title
+  try {
+    const side = JSON.parse(await $.fs.read(file.replace(/\.jsonl$/, '') + '/custom-title.json'))
+    if (typeof side?.customTitle === 'string') return side.customTitle.trim() || null
+  } catch {
+    // none: unnamed until the next /rename
   }
   return null
 }
@@ -314,29 +366,27 @@ type LastExchange = { request: string; answer: string; at: number }
 
 // The latest request and reply in a session's transcript file, read from the
 // end. Local command output (/team, /rename) is not a request; a teammate's
-// message is. Null when the file is missing, unreadable or past 4 MiB.
+// message is. Null when the file is missing or unreadable.
 async function lastExchange($: Engine, file: string): Promise<LastExchange | null> {
   try {
     const stat = await $.fs.stat(file)
-    const lines = (await $.fs.read(file)).split('\n')
     let request = ''
     let answer = ''
-    for (let i = lines.length - 1; i >= 0 && !(request && answer); i--) {
-      const line = lines[i] ?? ''
-      if (!line.includes('"message"')) continue
+    await scanFromEnd($, file, (line) => {
+      if (!line.includes('"message"')) return false
       let row: any
       try {
         row = JSON.parse(line)
       } catch {
-        continue
+        return false
       }
       if (row?.type === 'assistant' && !answer) answer = readable(rowText(row))
       else if (row?.type === 'user' && !request) {
         const raw = rowText(row)
-        if (/<local-command-|<command-name>/.test(raw)) continue
-        request = readable(raw)
+        if (!/<local-command-|<command-name>/.test(raw)) request = readable(raw)
       }
-    }
+      return request.length > 0 && answer.length > 0
+    })
     if (!request && !answer) return null
     return { request, answer, at: stat.mtimeMs }
   } catch {
@@ -433,6 +483,12 @@ async function withActivity($: Engine, self: Me, team: Member[], summarizeIfNew:
   return out
 }
 
+// Most recently active first: by when the teammate last finished a turn, then
+// by name. Every live teammate's heartbeat is under a minute old, so `lastSeen`
+// cannot tell them apart; `taskAt` can.
+const byRecentActivity = (team: Member[]): Member[] =>
+  [...team].sort((a, b) => (b.taskAt ?? 0) - (a.taskAt ?? 0) || a.name.localeCompare(b.name))
+
 // One line for a teammate's activity, or null when it has recorded none.
 function activityLine(m: Member, now: number): string | null {
   const what = m.task ? 'working on ' + m.task : m.lastPrompt ? 'last request: ' + m.lastPrompt : null
@@ -524,7 +580,7 @@ export const register: Register = (on) => {
     const self = await ensureMe($)
     if (!self) return { text: 'agent-team: could not find the Claude config folder.' }
     const now = await $.clock.now()
-    const team = await withActivity($, self, await teammates($, self), true)
+    const team = byRecentActivity(await withActivity($, self, await teammates($, self), true))
     const head = self.name
       ? 'You are "' + self.name + '" on the ' + baseName(self.root) + ' team (' + self.root + ').'
       : 'This session has no name yet. Run /rename <name> to join the ' + baseName(self.root) + ' team.'
@@ -594,7 +650,7 @@ export const register: Register = (on) => {
       const self = await ensureMe($)
       if (!self) return result
       // Cached activity only: building a request never waits on the summary model.
-      const team = await withActivity($, self, await teammates($, self), false)
+      const team = byRecentActivity(await withActivity($, self, await teammates($, self), false))
       const text = rosterText(self, team, await $.clock.now())
       return {
         ...result,

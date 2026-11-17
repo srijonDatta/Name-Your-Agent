@@ -7,7 +7,7 @@
 > A Claude Code mod that keeps your session's `/rename` name and full session ID pinned above the prompt, so you always know which session you're in.
 
 ```
-                                   Operation Manager d8300d65-e6e0-4e87-87b5-f14a75cc0ab0
+                                   Operation Manager 93bddbb5-6441-4dc2-baf7-165f3a520f68
 ───────────────────────────────────────────────────────────────────────────────────────────
 > _
 ```

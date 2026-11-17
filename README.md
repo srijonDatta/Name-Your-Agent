@@ -44,10 +44,17 @@ claude plugin install agent-team --marketplace srijonDatta/Name-Your-Agent
 2. Name them: `/rename Backend Lead` in one and `/rename QA Lead` in the other. Each prompt shows its name, and Backend Lead is told that QA Lead joined.
 3. Type `/team` to see your teammates, most recently active first, and what each one is working on, or last worked on if it's been idle:
    ```
+   /team
+   agent-team: You are "Backend Developer" on the my-app team (C:/work/my-app).
+
    Teammates:
-     Backend Lead  ·  active 1 min ago  ·  6db75129-258d-4a73-a701-74f7f0cbef10
-         ↳ Preparing the database migration for the release
-           adding the missing index on orders  (2 min ago)
+     Backend Lead  ·  active now  ·  709328ba-f4c1-4b5e-bf7c-a05559eb7b10
+         ↳ Waiting on you to approve the database migration plan: new index on orders, no downtime window needed.
+           Staging deploy #214 still needs a smoke test, or re-sign the GitHub connector via /mcp.  (16 min ago)
+
+     Operation Manager  ·  active 1 min ago  ·  93bddbb5-6441-4dc2-baf7-165f3a520f68
+         ↳ Sent Backend Developer a briefing on the deploy freeze, staging branch rules and open tickets; next step is Part A (rel…
+           Waiting on the release checklist sign-off before tagging v2.4.  (17 min ago)
    ```
 4. Type `/tell Backend Lead hi` to message a teammate, or ask either agent, in plain English, to hand work to the other.
 

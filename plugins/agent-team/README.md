@@ -36,12 +36,19 @@ It pairs well with [`session-label`](../session-label), which shows each session
    claude
    ```
 2. **Name each agent.** Run `/rename Backend Lead` in the first and `/rename QA Lead` in the second. The first agent receives *"QA Lead" joined the team*.
-3. **Check the team.** Type `/team` in either session. It lists the other session, when it was last active, its session ID, and what it's working on:
+3. **Check the team.** Type `/team` in either session. It lists every other session on the team, most recently active first, with when it was last active, its session ID, and what it's working on. On a team of three, "Backend Developer" sees:
    ```
+   /team
+   agent-team: You are "Backend Developer" on the my-app team (C:/work/my-app).
+
    Teammates:
-     Backend Lead  ·  active 1 min ago  ·  6db75129-258d-4a73-a701-74f7f0cbef10
-         ↳ Preparing the database migration for the release
-           adding the missing index on orders  (2 min ago)
+     Backend Lead  ·  active now  ·  709328ba-f4c1-4b5e-bf7c-a05559eb7b10
+         ↳ Waiting on you to approve the database migration plan: new index on orders, no downtime window needed.
+           Staging deploy #214 still needs a smoke test, or re-sign the GitHub connector via /mcp.  (16 min ago)
+
+     Operation Manager  ·  active 1 min ago  ·  93bddbb5-6441-4dc2-baf7-165f3a520f68
+         ↳ Sent Backend Developer a briefing on the deploy freeze, staging branch rules and open tickets; next step is Part A (rel…
+           Waiting on the release checklist sign-off before tagging v2.4.  (17 min ago)
    ```
 4. **Send a message.** In QA Lead, type `/tell Backend Lead can you re-run the integration tests?`. Names aren't case-sensitive. Backend Lead receives the message and can reply on its own.
 5. **Let them coordinate.** Ask either agent to hand work to the other in plain English. It uses `SendMessage` with the teammate's name.
